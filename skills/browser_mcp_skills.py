@@ -3,7 +3,12 @@ import os
 import time
 import subprocess
 import asyncio
+import threading
+import json
 from typing import Optional, Any, Dict
+
+# Import safe screenshot wrapper
+from .safe_screenshot_wrapper import process_screenshot
 
 # Configure logging for the module
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -14,9 +19,13 @@ class BrowserMCPSkills:
         self.server_process = None
         self.enabled = os.getenv('BROWSER_MCP_ENABLED', 'true').lower() == 'true'
         self.timeout = int(os.getenv('BROWSER_MCP_TIMEOUT', '30'))
+        self._loop = None
+        self._loop_thread = None
+        self._server_ready = False
         
         if self.enabled:
             self._check_prerequisites()
+            self._start_background_loop()
     
     def _check_prerequisites(self):
         """Check if Node.js and Browser MCP are available"""
@@ -44,10 +53,49 @@ class BrowserMCPSkills:
             logger.error("💡 Install Browser MCP: npm install -g @browsermcp/mcp@latest")
             self.enabled = False
     
-    async def _start_mcp_server(self):
-        """Start Browser MCP server process"""
+    def _start_background_loop(self):
+        """Start a background event loop for all Browser MCP operations"""
+        if not self.enabled:
+            return
+            
+        def run_loop():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_forever()
+            finally:
+                self._loop.close()
+        
+        self._loop_thread = threading.Thread(target=run_loop, daemon=True)
+        self._loop_thread.start()
+        
+        # Wait for loop to be ready
+        while self._loop is None:
+            time.sleep(0.1)
+    
+    def _cleanup_server(self):
+        """Clean up existing server process"""
+        if self.server_process:
+            try:
+                self.server_process.terminate()
+                logger.info("🔚 Browser MCP server terminated")
+            except:
+                pass
+            self.server_process = None
+            self._server_ready = False
+    
+    async def _start_mcp_server_async(self):
+        """Start Browser MCP server process asynchronously"""
+        if self._server_ready and self.server_process:
+            return True
+            
         try:
             logger.info("🚀 Starting Browser MCP server...")
+            
+            # Clean up any existing server
+            if self.server_process:
+                self.server_process.terminate()
+                await asyncio.sleep(0.5)
             
             # Start the Browser MCP server as a subprocess
             self.server_process = await asyncio.create_subprocess_exec(
@@ -57,19 +105,21 @@ class BrowserMCPSkills:
                 stderr=asyncio.subprocess.PIPE
             )
             
+            # Wait for server to initialize
+            await asyncio.sleep(2)
+            
             logger.info("✅ Browser MCP server started")
+            self._server_ready = True
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to start Browser MCP server: {e}")
             return False
     
-    async def _send_mcp_request(self, method: str, params: Optional[Dict] = None):
-        """Send MCP request to server"""
+    async def _send_mcp_request_async(self, method: str, params: Optional[Dict] = None):
+        """Send MCP request to server asynchronously"""
         if not self.server_process:
             raise Exception("MCP server not started")
-        
-        import json
         
         # Create MCP request
         request = {
@@ -99,8 +149,14 @@ class BrowserMCPSkills:
             arguments = arguments or {}
             logger.info(f"🔧 Calling Browser MCP tool: {tool_name} with args: {arguments}")
             
+            # Ensure server is running
+            if not self._server_ready:
+                server_started = await self._start_mcp_server_async()
+                if not server_started:
+                    raise Exception("Failed to start MCP server")
+            
             # Send tool call request
-            result = await self._send_mcp_request("tools/call", {
+            result = await self._send_mcp_request_async("tools/call", {
                 "name": tool_name,
                 "arguments": arguments
             })
@@ -112,35 +168,20 @@ class BrowserMCPSkills:
             logger.error(f"❌ Browser MCP tool '{tool_name}' failed: {e}")
             raise
     
+    def _run_in_loop(self, coro):
+        """Run coroutine in the background event loop"""
+        if not self._loop or not self.enabled:
+            raise Exception("Background loop not available")
+        
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=self.timeout)
+    
     def _call_mcp_tool(self, tool_name: str, arguments: Optional[Dict] = None):
         """Synchronous wrapper for async MCP tool calls"""
         if not self.enabled:
             raise Exception("Browser MCP is disabled")
         
-        return asyncio.run(self._execute_tool(tool_name, arguments))
-    
-    async def _execute_tool(self, tool_name: str, arguments: Optional[Dict] = None):
-        """Execute tool with proper server lifecycle"""
-        server_started = False
-        try:
-            # Start server if not already running
-            if not self.server_process:
-                server_started = await self._start_mcp_server()
-                if not server_started:
-                    raise Exception("Failed to start MCP server")
-                
-                # Wait for server to initialize
-                await asyncio.sleep(2)
-            
-            # Call the tool
-            return await self._call_mcp_tool_async(tool_name, arguments)
-            
-        except Exception as e:
-            logger.error(f"❌ Tool execution failed: {e}")
-            raise
-        finally:
-            # Keep server running for subsequent calls
-            pass
+        return self._run_in_loop(self._call_mcp_tool_async(tool_name, arguments))
 
     def navigate(self, url: str):
         """Navigate to URL using Browser MCP"""
@@ -306,12 +347,12 @@ class BrowserMCPSkills:
             return f"Error extracting text: {e}"
 
     def screenshot(self):
-        """Take screenshot using Browser MCP"""
+        """Take screenshot using Browser MCP with safe screenshot processing"""
         logger.info("📸 Taking screenshot")
         
         if not self.enabled:
-            logger.warning("⚠️  Browser MCP disabled - using placeholder")
-            return "screenshot_placeholder.png"
+            logger.warning("⚠️  Browser MCP disabled - using safe screenshot fallback")
+            return process_screenshot("Error: Browser MCP disabled")
         
         try:
             result = self._call_mcp_tool("browser_screenshot")
@@ -338,15 +379,21 @@ class BrowserMCPSkills:
                         with open(screenshot_path, 'wb') as f:
                             f.write(base64.b64decode(screenshot_data))
                         
-                        logger.info(f"✅ Screenshot saved: {screenshot_path}")
-                        return screenshot_path
+                        logger.info(f"✅ Browser MCP screenshot saved: {screenshot_path}")
+                        
+                        # Process through safe screenshot for LLM optimization
+                        logger.info("🔄 Processing through safe screenshot for LLM optimization...")
+                        safe_screenshot_path = process_screenshot(screenshot_path)
+                        
+                        return safe_screenshot_path
             
-            logger.warning("⚠️  No screenshot data received")
-            return "Error: No screenshot data"
+            logger.warning("⚠️  No screenshot data received from Browser MCP")
+            return process_screenshot("Error: No screenshot data")
             
         except Exception as e:
-            logger.error(f"❌ Failed to take screenshot: {e}")
-            return f"Error: {e}"
+            logger.error(f"❌ Browser MCP screenshot failed: {e}")
+            # Fallback to safe screenshot
+            return process_screenshot(f"Error: {e}")
     
     def test_connection(self):
         """Test Browser MCP connection"""
@@ -360,7 +407,7 @@ class BrowserMCPSkills:
             # Test with a simple browser action
             logger.info("🔧 Testing basic Browser MCP functionality...")
             
-            # Try to get a simple page snapshot or status
+            # Use about:blank for simple test
             result = self.navigate("about:blank")
             
             if result and result.get('status') != 'error':
@@ -381,12 +428,9 @@ class BrowserMCPSkills:
             return False
     
     def __del__(self):
-        """Cleanup MCP server process on destruction"""
-        if self.server_process:
-            try:
-                self.server_process.terminate()
-                logger.info("🔚 Browser MCP server terminated")
-            except:
-                pass
+        """Cleanup MCP server process and event loop on destruction"""
+        self._cleanup_server()
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
 
 
