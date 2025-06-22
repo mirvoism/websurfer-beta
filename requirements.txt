@@ -1,16 +1,14 @@
-# LLM Integration (Mac Studio Ollama endpoint)
-openai>=1.0.0
+# Core dependencies
+openai>=1.30.0
+python-dotenv>=1.0.0
+requests>=2.31.0
 
-# Environment Management
-python-dotenv>=0.19.0
-
-# HTTP Client
-requests>=2.28.0
-
-# Browser MCP Integration
-mcp>=0.9.0
-
-# Development and Testing
+# Testing and development
 unittest-xml-reporting>=3.2.0
+
+# Browser MCP integration notes:
+# - Browser MCP server installed via npm: npm install -g @browsermcp/mcp@latest
+# - Direct JSON-RPC communication (no Python MCP SDK dependency needed)
+# - Requires Node.js and Chrome with Browser MCP extension
 
 
