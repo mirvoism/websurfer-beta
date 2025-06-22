@@ -18,11 +18,16 @@ def main():
                         help="Show configuration details")
     parser.add_argument("--test", action="store_true",
                         help="Test Mac Studio LLM connection")
+    parser.add_argument("--test-browser", action="store_true",
+                        help="Test Browser MCP connection")
+    parser.add_argument("--test-all", action="store_true",
+                        help="Test both LLM and Browser MCP connections")
     args = parser.parse_args()
 
     # Initialize components with configuration management
     try:
         llm = LLM(provider="mac_studio")
+        browser_skills = BrowserMCPSkills()
         
         print(f"\n🤖 WebSurfer-β Agent")
         
@@ -32,17 +37,26 @@ def main():
             for key, value in config.items():
                 print(f"   {key}: {value}")
         
-        # Test connection if requested
-        if args.test:
-            return 0 if llm.test_connection() else 1
+        # Test connections if requested
+        if args.test or args.test_all:
+            llm_success = llm.test_connection()
+            if not args.test_all:
+                return 0 if llm_success else 1
+        
+        if args.test_browser or args.test_all:
+            browser_success = browser_skills.test_connection()
+            if args.test_all:
+                return 0 if (llm_success and browser_success) else 1
+            else:
+                return 0 if browser_success else 1
         
         # Require task if not testing
         if not args.task:
-            print("❌ Error: Task is required (or use --test to test connection)")
+            print("❌ Error: Task is required (or use --test/--test-browser/--test-all)")
             print("Example: python main.py 'find the best Python tutorials'")
+            print("Testing: python main.py --test-all")
             return 1
         
-        browser_skills = BrowserMCPSkills()
         design_rules = DesignRules()
         adk_graph = ADKGraph(llm=llm)
         
@@ -71,6 +85,7 @@ def main():
     except Exception as e:
         print(f"❌ Error: {e}")
         print("💡 Make sure your .env file is configured correctly (copy from .env.example)")
+        print("💡 Ensure Chrome has Browser MCP extension installed")
         return 1
 
 if __name__ == "__main__":
