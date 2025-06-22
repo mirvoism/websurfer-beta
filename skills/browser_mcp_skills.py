@@ -67,7 +67,19 @@ class BrowserMCPSkills:
             if tool_name == "browser_extract_text":
                 result["text"] = f"Sample extracted text from {arguments.get('selector', 'element')}"
             elif tool_name == "browser_screenshot":
-                result["path"] = f"screenshot_{int(time.time())}.png"
+                import os
+                screenshot_name = f"screenshot_{int(time.time())}.png"
+                # Create screenshots directory if it doesn't exist
+                os.makedirs("screenshots", exist_ok=True)
+                screenshot_path = os.path.join("screenshots", screenshot_name)
+                result["path"] = screenshot_path
+                
+                # Create a dummy screenshot file for testing
+                # In real implementation, this would be actual screenshot data
+                with open(screenshot_path, 'w') as f:
+                    f.write("# Placeholder screenshot file - would contain actual image data in real implementation\n")
+                    f.write(f"# Screenshot taken at: {time.time()}\n")
+                    f.write(f"# URL: {arguments.get('url', 'unknown')}\n")
                 
             return result
             
