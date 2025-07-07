@@ -15,7 +15,32 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 class BrowserMCPSkills:
+    """
+    Browser MCP Skills for WebSurfer-β Agent
+    
+    Provides both VISUAL and NON-VISUAL browser automation capabilities optimized for LLM usage.
+    
+    VISUAL CAPABILITIES (for vision-enabled LLMs):
+    - screenshot(): Get visual snapshots for LLM analysis
+    - click_at_coordinates(x, y): Click at specific pixel coordinates identified by LLM
+    - Visual workflow: screenshot → LLM analysis → coordinate-based actions
+    
+    NON-VISUAL CAPABILITIES (for all LLMs):
+    - navigate(url): Navigate to websites  
+    - snapshot(): Get DOM structure and text content
+    - extract_text(): Get readable text from pages
+    - Element-based actions using fresh DOM references
+    
+    HYBRID APPROACH:
+    - LLM can choose visual or non-visual methods based on task complexity
+    - Visual for complex modern websites, non-visual for simple content extraction
+    - Robust fallback systems ensure reliability
+    
+    All methods return structured results for easy LLM processing.
+    """
+    
     def __init__(self):
+        """Initialize Browser MCP with both visual and non-visual capabilities"""
         self.server_process = None
         self.enabled = os.getenv('BROWSER_MCP_ENABLED', 'true').lower() == 'true'
         self.timeout = int(os.getenv('BROWSER_MCP_TIMEOUT', '30'))
@@ -117,7 +142,7 @@ class BrowserMCPSkills:
             return False
     
     async def _send_mcp_request_async(self, method: str, params: Optional[Dict] = None):
-        """Send MCP request to server asynchronously"""
+        """Send MCP request to server asynchronously with chunked response handling"""
         if not self.server_process:
             raise Exception("MCP server not started")
         
@@ -134,14 +159,120 @@ class BrowserMCPSkills:
         self.server_process.stdin.write(request_json.encode())
         await self.server_process.stdin.drain()
         
-        # Read response
-        response_line = await self.server_process.stdout.readline()
-        response = json.loads(response_line.decode().strip())
+        # Read response with chunked handling for large responses
+        response_data = b''
+        max_attempts = 100  # Prevent infinite loops
+        attempt = 0
         
-        if 'error' in response:
-            raise Exception(f"MCP Error: {response['error']}")
+        while attempt < max_attempts:
+            try:
+                # Try to read a chunk of data
+                chunk = await asyncio.wait_for(self.server_process.stdout.read(8192), timeout=1.0)
+                if not chunk:
+                    break
+                    
+                response_data += chunk
+                
+                # Try to parse as complete JSON response
+                try:
+                    response_str = response_data.decode('utf-8').strip()
+                    
+                    # For very large responses (like screenshots), try to parse incrementally
+                    if len(response_data) > 100000:  # 100KB threshold
+                        # Look for JSON response boundaries more carefully
+                        start_idx = response_str.find('{"jsonrpc"')
+                        if start_idx >= 0:
+                            # Find the matching closing brace
+                            brace_count = 0
+                            end_idx = -1
+                            in_string = False
+                            escape_next = False
+                            
+                            for i, char in enumerate(response_str[start_idx:], start_idx):
+                                if escape_next:
+                                    escape_next = False
+                                    continue
+                                if char == '\\':
+                                    escape_next = True
+                                    continue
+                                if char == '"' and not escape_next:
+                                    in_string = not in_string
+                                    continue
+                                if not in_string:
+                                    if char == '{':
+                                        brace_count += 1
+                                    elif char == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            end_idx = i + 1
+                                            break
+                            
+                            if end_idx > 0:
+                                json_str = response_str[start_idx:end_idx]
+                                try:
+                                    response = json.loads(json_str)
+                                    if 'error' in response:
+                                        raise Exception(f"MCP Error: {response['error']}")
+                                    return response.get('result')
+                                except json.JSONDecodeError as e:
+                                    logger.debug(f"Large response JSON parse failed: {e}")
+                    
+                    # Look for complete JSON response (ends with })
+                    if response_str.endswith('}') or response_str.endswith('}\n'):
+                        # Try to find the start of JSON response
+                        lines = response_str.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('{') and line.endswith('}'):
+                                try:
+                                    response = json.loads(line)
+                                    if 'error' in response:
+                                        raise Exception(f"MCP Error: {response['error']}")
+                                    return response.get('result')
+                                except json.JSONDecodeError:
+                                    continue
+                        
+                        # If we can't find a complete JSON line, try parsing the whole thing
+                        try:
+                            response = json.loads(response_str)
+                            if 'error' in response:
+                                raise Exception(f"MCP Error: {response['error']}")
+                            return response.get('result')
+                        except json.JSONDecodeError:
+                            pass
+                            
+                except UnicodeDecodeError:
+                    # Continue reading if we have incomplete UTF-8
+                    pass
+                    
+                attempt += 1
+                
+            except asyncio.TimeoutError:
+                # No more data available, try to parse what we have
+                break
         
-        return response.get('result')
+        # Final attempt to parse accumulated data
+        try:
+            response_str = response_data.decode('utf-8').strip()
+            # Try each line separately
+            lines = response_str.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith('{'):
+                    try:
+                        response = json.loads(line)
+                        if 'error' in response:
+                            raise Exception(f"MCP Error: {response['error']}")
+                        return response.get('result')
+                    except json.JSONDecodeError:
+                        continue
+                        
+            raise Exception(f"Failed to parse MCP response after {attempt} attempts. Data length: {len(response_data)}")
+            
+        except UnicodeDecodeError as e:
+            raise Exception(f"Failed to decode MCP response: {e}")
+        except Exception as e:
+            raise Exception(f"Failed to parse MCP response: {e}")
     
     async def _call_mcp_tool_async(self, tool_name: str, arguments: Optional[Dict] = None):
         """Call Browser MCP tool asynchronously"""
@@ -183,29 +314,105 @@ class BrowserMCPSkills:
         
         return self._run_in_loop(self._call_mcp_tool_async(tool_name, arguments))
 
-    def navigate(self, url: str):
-        """Navigate to URL using Browser MCP"""
+    def navigate(self, url: str) -> dict:
+        """
+        Navigate to a URL and return page information
+        
+        Args:
+            url (str): The URL to navigate to
+            
+        Returns:
+            dict: {
+                'status': 'success'|'error',
+                'url': str,  # Final URL after redirects
+                'title': str,  # Page title
+                'content': str,  # Page content summary
+                'message': str  # Human-readable result
+            }
+            
+        LLM Usage:
+            - Use this to start browsing or move between pages
+            - Check returned URL to confirm navigation worked
+            - Use title and content for context about the page
+            
+        Example:
+            result = browser.navigate("https://google.com")
+            if result['status'] == 'success':
+                print(f"Now on: {result['title']}")
+        """
         logger.info(f"🌐 Navigating to URL: {url}")
         
         if not self.enabled:
-            logger.warning("⚠️  Browser MCP disabled - cannot navigate")
-            return {"status": "disabled", "message": "Browser MCP is disabled"}
+            return {
+                'status': 'disabled',
+                'url': url,
+                'title': '',
+                'content': '',
+                'message': 'Browser MCP is disabled'
+            }
         
         try:
             result = self._call_mcp_tool("browser_navigate", {"url": url})
+            
+            # Extract page information from result
+            page_info = self._extract_page_info(result)
+            
             logger.info(f"✅ Successfully navigated to: {url}")
-            return result
+            return {
+                'status': 'success',
+                'url': url,
+                'title': page_info.get('title', ''),
+                'content': page_info.get('content_preview', ''),
+                'message': f"Successfully navigated to {url}"
+            }
             
         except Exception as e:
             logger.error(f"❌ Failed to navigate to URL: {e}")
-            return {"status": "error", "message": str(e)}
+            return {
+                'status': 'error',
+                'url': url,
+                'title': '',
+                'content': '',
+                'message': str(e)
+            }
 
     def open(self, url: str):
         """Alias for navigate - for backward compatibility"""
         return self.navigate(url)
 
+    def _get_element_ref(self, element_description: str):
+        """Get current element reference from fresh DOM snapshot"""
+        try:
+            # Get fresh snapshot
+            snapshot = self.snapshot()
+            if not isinstance(snapshot, dict) or 'content' not in snapshot:
+                return None
+            
+            content = snapshot['content'][0]['text'] if snapshot['content'] else ''
+            lines = content.split('\n')
+            
+            # Look for element matching description
+            import re
+            for line in lines:
+                # Match various patterns for the element
+                if element_description.lower() in line.lower() and '[ref=' in line:
+                    # Extract reference like s1e58 from [ref=s1e58]
+                    match = re.search(r'\[ref=([^\]]+)\]', line)
+                    if match:
+                        ref = match.group(1)
+                        # Extract element type (link, button, combobox, etc.)
+                        element_match = re.search(r'- (\w+)', line.strip())
+                        element_type = element_match.group(1) if element_match else 'element'
+                        return {'ref': ref, 'type': element_type, 'line': line.strip()}
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get element reference: {e}")
+            return None
+
     def click(self, element: str):
-        """Click element using Browser MCP"""
+        """Click element using Browser MCP with fresh element reference"""
         logger.info(f"🖱️  Clicking element: {element}")
         
         if not self.enabled:
@@ -213,7 +420,19 @@ class BrowserMCPSkills:
             return {"status": "disabled", "message": "Browser MCP is disabled"}
         
         try:
-            result = self._call_mcp_tool("browser_click", {"element": element})
+            # Try to get fresh element reference
+            element_info = self._get_element_ref(element)
+            if element_info:
+                logger.info(f"📍 Found element reference: {element_info['ref']} ({element_info['type']})")
+                result = self._call_mcp_tool("browser_click", {
+                    "element": element_info['type'],
+                    "ref": element_info['ref']
+                })
+            else:
+                # Fallback to original approach for CSS selectors
+                logger.info(f"⚠️  Using fallback CSS selector approach")
+                result = self._call_mcp_tool("browser_click", {"element": element})
+            
             logger.info(f"✅ Successfully clicked: {element}")
             return result
             
@@ -222,7 +441,7 @@ class BrowserMCPSkills:
             return {"status": "error", "message": str(e)}
 
     def type(self, element: str, text: str):
-        """Type text into element using Browser MCP"""
+        """Type text into element using Browser MCP with fresh element reference"""
         logger.info(f"⌨️  Typing '{text}' into element: {element}")
         
         if not self.enabled:
@@ -230,10 +449,39 @@ class BrowserMCPSkills:
             return {"status": "disabled", "message": "Browser MCP is disabled"}
         
         try:
-            result = self._call_mcp_tool("browser_type", {
-                "element": element,
-                "text": text
-            })
+            # Get fresh element reference
+            element_info = self._get_element_ref(element)
+            if element_info:
+                logger.info(f"📍 Found element reference: {element_info['ref']} ({element_info['type']})")
+                
+                # First click to focus the element (as user suggested)
+                logger.info(f"🖱️  Clicking to focus element first...")
+                click_result = self._call_mcp_tool("browser_click", {
+                    "element": element_info['type'],
+                    "ref": element_info['ref']
+                })
+                
+                # Small delay after click
+                import time
+                time.sleep(0.5)
+                
+                # Then type into the focused element
+                result = self._call_mcp_tool("browser_type", {
+                    "element": element_info['type'],
+                    "text": text,
+                    "ref": element_info['ref'],
+                    "submit": False
+                })
+            else:
+                # Fallback to original approach
+                logger.info(f"⚠️  Using fallback CSS selector approach")
+                result = self._call_mcp_tool("browser_type", {
+                    "element": element,
+                    "text": text,
+                    "ref": "",
+                    "submit": False
+                })
+            
             logger.info(f"✅ Successfully typed into: {element}")
             return result
             
@@ -297,57 +545,178 @@ class BrowserMCPSkills:
             time.sleep(seconds)
             return {"status": "completed", "method": "fallback", "error": str(e)}
 
-    def snapshot(self):
-        """Take DOM snapshot using Browser MCP"""
+    def snapshot(self) -> dict:
+        """
+        Get DOM structure and text content (NON-VISUAL capability)
+        
+        Returns:
+            dict: {
+                'status': 'success'|'error',
+                'content': str,  # DOM structure in YAML format
+                'text_length': int,
+                'elements': list,  # Available interactive elements
+                'message': str
+            }
+            
+        LLM Usage:
+            - Use for text-based analysis and element identification
+            - Get structured view of page content and interactive elements
+            - Alternative to visual analysis for simple pages
+            - Extract element references for non-visual clicking/typing
+            
+        Example:
+            snapshot = browser.snapshot()
+            if snapshot['status'] == 'success':
+                # LLM can analyze the DOM structure
+                elements = snapshot['elements']
+                # Find search box in elements list
+        """
         logger.info("📄 Taking DOM snapshot")
         
         if not self.enabled:
-            logger.warning("⚠️  Browser MCP disabled - cannot take snapshot")
-            return {"status": "disabled", "message": "Browser MCP is disabled"}
+            return {
+                'status': 'disabled',
+                'content': '',
+                'text_length': 0,
+                'elements': [],
+                'message': 'Browser MCP is disabled'
+            }
         
         try:
             result = self._call_mcp_tool("browser_snapshot")
-            logger.info(f"✅ Successfully took DOM snapshot")
-            return result
+            
+            if result and isinstance(result, dict) and 'content' in result:
+                content = result['content'][0]['text'] if result['content'] else ''
+                
+                # Extract interactive elements
+                elements = self._extract_interactive_elements(content)
+                
+                logger.info(f"✅ Successfully took DOM snapshot")
+                return {
+                    'status': 'success',
+                    'content': content,
+                    'text_length': len(content),
+                    'elements': elements,
+                    'message': f"DOM snapshot captured ({len(content)} chars, {len(elements)} interactive elements)"
+                }
+            else:
+                return {
+                    'status': 'error',
+                    'content': '',
+                    'text_length': 0,
+                    'elements': [],
+                    'message': 'Failed to capture DOM snapshot'
+                }
             
         except Exception as e:
             logger.error(f"❌ Failed to take snapshot: {e}")
-            return {"status": "error", "message": str(e)}
+            return {
+                'status': 'error',
+                'content': '',
+                'text_length': 0,
+                'elements': [],
+                'message': str(e)
+            }
 
-    def extract_text(self, selector: Optional[str] = None):
-        """Extract text from page using snapshot"""
+    def extract_text(self, selector: Optional[str] = None) -> dict:
+        """
+        Extract readable text content from the page (NON-VISUAL capability)
+        
+        Args:
+            selector (str, optional): CSS selector to extract text from specific element
+            
+        Returns:
+            dict: {
+                'status': 'success'|'error',
+                'text': str,  # Extracted text content
+                'length': int,
+                'message': str
+            }
+            
+        LLM Usage:
+            - Use for content analysis and information extraction
+            - Get clean, readable text without HTML markup
+            - Perfect for research, fact-finding, and content summarization
+            - Faster than visual analysis for text-heavy pages
+            
+        Example:
+            content = browser.extract_text()
+            if content['status'] == 'success':
+                # LLM can analyze the text content
+                text = content['text']
+                # Extract specific information from text
+        """
         logger.info(f"📄 Extracting text from page")
         
         if not self.enabled:
-            logger.warning("⚠️  Browser MCP disabled - using placeholder")
-            return "Placeholder text (Browser MCP disabled)"
+            return {
+                'status': 'disabled',
+                'text': 'Browser MCP disabled',
+                'length': 0,
+                'message': 'Browser MCP is disabled'
+            }
         
         try:
             # Get page snapshot which includes text content
             snapshot_result = self.snapshot()
             
-            if snapshot_result and isinstance(snapshot_result, dict):
-                if 'content' in snapshot_result:
-                    # Extract text from snapshot content
-                    text_content = []
-                    content = snapshot_result['content']
-                    if isinstance(content, list):
-                        for content_item in content:
-                            if isinstance(content_item, dict) and content_item.get('type') == 'text':
-                                text_content.append(content_item.get('text', ''))
-                    
-                    extracted_text = '\n'.join(text_content)
-                    logger.info(f"✅ Successfully extracted text from page")
-                    return extracted_text
-            
-            return "No text content found in snapshot"
+            if snapshot_result['status'] == 'success':
+                # Extract text from snapshot content
+                text_content = []
+                content = snapshot_result['content']
+                if content:
+                    lines = content.split('\n')
+                    for line in lines:
+                        # Extract readable text, skip YAML structure
+                        if not line.strip().startswith('-') and not line.strip().startswith('```'):
+                            clean_line = line.strip()
+                            if clean_line and not clean_line.startswith('/url:'):
+                                text_content.append(clean_line)
+                
+                extracted_text = '\n'.join(text_content)
+                logger.info(f"✅ Successfully extracted text from page")
+                return {
+                    'status': 'success',
+                    'text': extracted_text,
+                    'length': len(extracted_text),
+                    'message': f"Extracted {len(extracted_text)} characters of text"
+                }
+            else:
+                return {
+                    'status': 'error',
+                    'text': '',
+                    'length': 0,
+                    'message': 'Failed to get page snapshot for text extraction'
+                }
             
         except Exception as e:
             logger.error(f"❌ Failed to extract text: {e}")
-            return f"Error extracting text: {e}"
+            return {
+                'status': 'error',
+                'text': '',
+                'length': 0,
+                'message': str(e)
+            }
 
-    def screenshot(self):
-        """Take screenshot using Browser MCP with safe screenshot processing"""
+    def screenshot(self) -> str:
+        """
+        Take a screenshot of the current page (VISUAL capability)
+        
+        Returns:
+            str: Path to saved screenshot file, or error message
+            
+        LLM Usage:
+            - Use this for visual analysis of web pages
+            - Screenshots are optimized for LLM processing (600px max, ~137KB)
+            - Perfect for identifying clickable elements, forms, layouts
+            - Combine with click_at_coordinates() for visual navigation
+            
+        Example:
+            screenshot_path = browser.screenshot()
+            if not screenshot_path.startswith("Error"):
+                # Send to LLM for visual analysis
+                analysis = llm.analyze_image(screenshot_path, "Find the search box")
+        """
         logger.info("📸 Taking screenshot")
         
         if not self.enabled:
@@ -394,7 +763,260 @@ class BrowserMCPSkills:
             logger.error(f"❌ Browser MCP screenshot failed: {e}")
             # Fallback to safe screenshot
             return process_screenshot(f"Error: {e}")
-    
+
+    def click_at_coordinates(self, x: int, y: int) -> dict:
+        """
+        Click at specific pixel coordinates (VISUAL capability)
+        
+        Args:
+            x (int): X coordinate in pixels
+            y (int): Y coordinate in pixels
+            
+        Returns:
+            dict: {
+                'status': 'success'|'error',
+                'coordinates': [x, y],
+                'message': str
+            }
+            
+        LLM Usage:
+            - Use this after visual analysis of screenshots
+            - LLM identifies clickable elements and provides coordinates
+            - Most reliable method for complex modern websites
+            - Bypasses element reference complexity
+            
+        Example:
+            # After LLM analyzes screenshot and identifies search box at (500, 300)
+            result = browser.click_at_coordinates(500, 300)
+            if result['status'] == 'success':
+                # Now type in the focused field
+                browser.type_text("search query")
+        """
+        logger.info(f"🖱️  Clicking at coordinates: ({x}, {y})")
+        
+        if not self.enabled:
+            return {
+                'status': 'disabled',
+                'coordinates': [x, y],
+                'message': 'Browser MCP is disabled'
+            }
+        
+        try:
+            # Use Browser MCP coordinate clicking if available
+            # Note: This might need to be implemented based on Browser MCP capabilities
+            result = self._call_mcp_tool("browser_click_coordinates", {
+                "x": x,
+                "y": y
+            })
+            
+            logger.info(f"✅ Successfully clicked at coordinates: ({x}, {y})")
+            return {
+                'status': 'success',
+                'coordinates': [x, y],
+                'message': f"Clicked at ({x}, {y})"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to click at coordinates: {e}")
+            return {
+                'status': 'error',
+                'coordinates': [x, y],
+                'message': str(e)
+            }
+
+    def type_text(self, text: str) -> dict:
+        """
+        Type text into the currently focused element
+        
+        Args:
+            text (str): Text to type
+            
+        Returns:
+            dict: {
+                'status': 'success'|'error',
+                'text': str,
+                'message': str
+            }
+            
+        LLM Usage:
+            - Use after clicking on an input field (click_at_coordinates or click)
+            - Works with any focused text input, textarea, or editable element
+            - Simpler than element-based typing for visual workflows
+            
+        Example:
+            # After clicking on search box
+            result = browser.type_text("Lakers basketball news")
+            if result['status'] == 'success':
+                # Press Enter or click search button
+        """
+        logger.info(f"⌨️  Typing text: '{text}'")
+        
+        if not self.enabled:
+            return {
+                'status': 'disabled',
+                'text': text,
+                'message': 'Browser MCP is disabled'
+            }
+        
+        try:
+            # Type into currently focused element
+            result = self._call_mcp_tool("browser_type_text", {
+                "text": text
+            })
+            
+            logger.info(f"✅ Successfully typed text: '{text}'")
+            return {
+                'status': 'success',
+                'text': text,
+                'message': f"Typed: {text}"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to type text: {e}")
+            return {
+                'status': 'error',
+                'text': text,
+                'message': str(e)
+            }
+
+    def get_tool_capabilities(self) -> dict:
+        """
+        Get information about available tools and their capabilities for LLM
+        
+        Returns:
+            dict: Complete tool schema and capability information
+            
+        LLM Usage:
+            - Call this to understand available browser automation capabilities
+            - Get tool schemas, parameters, and usage examples
+            - Decide between visual vs non-visual approaches
+        """
+        return {
+            'visual_tools': {
+                'screenshot': {
+                    'description': 'Take visual snapshot of current page',
+                    'returns': 'Path to LLM-optimized image file (600px max)',
+                    'use_case': 'Visual analysis, element identification, layout understanding',
+                    'best_for': 'Complex modern websites, visual elements, forms'
+                },
+                'click_at_coordinates': {
+                    'description': 'Click at specific pixel coordinates',
+                    'parameters': {'x': 'int', 'y': 'int'},
+                    'use_case': 'After visual analysis identifies clickable elements',
+                    'best_for': 'Precise clicking based on visual analysis'
+                },
+                'type_text': {
+                    'description': 'Type into currently focused element',
+                    'parameters': {'text': 'str'},
+                    'use_case': 'After clicking on input fields',
+                    'best_for': 'Simple text input after visual element selection'
+                }
+            },
+            'non_visual_tools': {
+                'navigate': {
+                    'description': 'Navigate to URL and get page information',
+                    'parameters': {'url': 'str'},
+                    'returns': 'Page title, URL, content summary',
+                    'best_for': 'Moving between pages, starting browsing sessions'
+                },
+                'snapshot': {
+                    'description': 'Get DOM structure and interactive elements',
+                    'returns': 'YAML DOM structure, element list with references',
+                    'best_for': 'Understanding page structure, finding elements'
+                },
+                'extract_text': {
+                    'description': 'Get clean readable text content',
+                    'returns': 'Plain text content without markup',
+                    'best_for': 'Content analysis, research, fact extraction'
+                },
+                'click': {
+                    'description': 'Click element using description or CSS selector',
+                    'parameters': {'element': 'str (description or selector)'},
+                    'best_for': 'Clicking known elements when visual analysis not needed'
+                },
+                'type': {
+                    'description': 'Type into specific element (auto-clicks first)',
+                    'parameters': {'element': 'str', 'text': 'str'},
+                    'best_for': 'Form filling when element can be described'
+                }
+            },
+            'utility_tools': {
+                'scroll': {
+                    'description': 'Scroll page down',
+                    'best_for': 'Revealing more content, pagination'
+                },
+                'wait': {
+                    'description': 'Wait for specified seconds',
+                    'parameters': {'seconds': 'float'},
+                    'best_for': 'Waiting for page loads, animations'
+                },
+                'hover': {
+                    'description': 'Hover over element to reveal dropdowns/tooltips',
+                    'parameters': {'element': 'str'},
+                    'best_for': 'Revealing hidden navigation, tooltips'
+                }
+            },
+            'recommended_workflows': {
+                'visual_workflow': [
+                    '1. navigate(url) - Go to target page',
+                    '2. screenshot() - Get visual snapshot',
+                    '3. LLM analyzes image and identifies elements',
+                    '4. click_at_coordinates(x, y) - Click identified elements',
+                    '5. type_text(text) - Type into focused fields',
+                    '6. Repeat steps 2-5 as needed'
+                ],
+                'non_visual_workflow': [
+                    '1. navigate(url) - Go to target page',
+                    '2. snapshot() or extract_text() - Get page content',
+                    '3. LLM analyzes text/DOM structure',
+                    '4. click(element) or type(element, text) - Interact with elements',
+                    '5. Repeat steps 2-4 as needed'
+                ],
+                'hybrid_workflow': [
+                    '1. Start with non-visual tools for simple navigation',
+                    '2. Switch to visual tools for complex interactions',
+                    '3. Use visual analysis when non-visual methods fail',
+                    '4. Combine both approaches for maximum reliability'
+                ]
+            }
+        }
+
+    def _extract_page_info(self, result) -> dict:
+        """Extract page information from Browser MCP result"""
+        # Implementation to parse page info from result
+        info = {}
+        if isinstance(result, dict) and 'content' in result:
+            content = result['content'][0]['text'] if result['content'] else ''
+            lines = content.split('\n')
+            for line in lines:
+                if 'Page URL:' in line:
+                    info['url'] = line.split('Page URL:')[1].strip()
+                elif 'Page Title:' in line:
+                    info['title'] = line.split('Page Title:')[1].strip()
+            info['content_preview'] = content[:200] + '...' if len(content) > 200 else content
+        return info
+
+    def _extract_interactive_elements(self, content: str) -> list:
+        """Extract interactive elements from DOM snapshot"""
+        elements = []
+        if content:
+            lines = content.split('\n')
+            for line in lines:
+                if '[ref=' in line and any(keyword in line.lower() for keyword in 
+                    ['button', 'link', 'input', 'combobox', 'textbox', 'search']):
+                    # Extract element info
+                    import re
+                    ref_match = re.search(r'\[ref=([^\]]+)\]', line)
+                    if ref_match:
+                        ref = ref_match.group(1)
+                        element_type = line.split()[1] if len(line.split()) > 1 else 'element'
+                        elements.append({
+                            'ref': ref,
+                            'type': element_type,
+                            'description': line.strip()
+                        })
+        return elements
+
     def test_connection(self):
         """Test Browser MCP connection"""
         logger.info("🔍 Testing Browser MCP connection...")

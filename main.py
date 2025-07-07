@@ -1,12 +1,14 @@
 import os
 import argparse
+import asyncio
 from dotenv import load_dotenv
 from skills.llm_adapter import LLM
-from skills.browser_mcp_skills import BrowserMCPSkills
+from skills.browser import Browser
 from skills.adk_graph import ADKGraph
 from skills.design_rules import DesignRules
+from skills.memory import Memory
 
-def main():
+async def main():
     # Load environment variables first
     load_dotenv()
     
@@ -27,9 +29,10 @@ def main():
     # Initialize components with configuration management
     try:
         llm = LLM(provider="mac_studio")
-        browser_skills = BrowserMCPSkills()
+        memory = Memory()
+        browser = Browser(llm=llm, memory=memory)
         
-        print(f"\n🤖 WebSurfer-β Agent")
+        print(f"\n🤖 WebSurfer-β v2.0 Agent")
         
         if args.debug:
             print(f"🔧 Configuration:")
@@ -44,7 +47,9 @@ def main():
                 return 0 if llm_success else 1
         
         if args.test_browser or args.test_all:
-            browser_success = browser_skills.test_connection()
+            browser_success = await browser.start()
+            if browser_success:
+                await browser.stop()
             if args.test_all:
                 return 0 if (llm_success and browser_success) else 1
             else:
@@ -58,7 +63,7 @@ def main():
             return 1
         
         design_rules = DesignRules()
-        adk_graph = ADKGraph(llm=llm)
+        adk_graph = ADKGraph(llm=llm, browser=browser, memory=memory)
         
         print(f"📝 Task: {args.task}")
         
@@ -77,9 +82,9 @@ def main():
         design_rules.log_skill_call("main_execution", url="startup")
 
         # Run the ADK workflow
-        adk_graph.run_workflow(args.task, model=model)
+        await adk_graph.run_workflow(args.task, model=model)
 
-        print("\n✅ WebSurfer-β finished successfully!")
+        print("\n✅ WebSurfer-β v2.0 finished successfully!")
         return 0
         
     except Exception as e:
@@ -89,6 +94,6 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    exit(main())
+    exit(asyncio.run(main()))
 
 

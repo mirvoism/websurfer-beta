@@ -1,17 +1,31 @@
 {
-  "project_context": "WebSurfer-β: Vision-enhanced autonomous web-surfing agent with Mac Studio LLM (llama4:scout vision model) and Chrome Browser MCP. Complete ADK workflow with visual webpage analysis, screenshot processing, and intelligent navigation. Production-ready system.",
+  "project_context": "WebSurfer-β v2.0: Advanced autonomous web-surfing agent with asyncio architecture, intelligent Action system, vision-based error recovery, and persistent SQLite memory. Features modular skills/browser/ architecture, fallback selectors, and long-term learning capabilities.",
   "current_state": {
     "active_tasks": [],
     "blockers": [],
     "next_steps": [
-      "Test complex real-world browsing scenarios",
-      "Optimize vision model performance for web browsing",
-      "Add memory persistence with screenshot storage",
-      "Create production deployment configuration"
+      "Test complex multi-step browsing scenarios with memory learning",
+      "Optimize vision-based error recovery performance", 
+      "Add batch processing and advanced analytics",
+      "Deploy production configuration with monitoring"
     ],
-    "ts": "2025-01-22T09:00-05:00"
+    "ts": "2025-01-22T18:30-05:00"
   },
   "progress_log": [
+    {
+      "ts": "2025-01-22T18:30-05:00",
+      "done": ["Complete v2.0 architecture refactor", "Asyncio conversion successful", "Action class with fallback selectors", "Vision-based error recovery implemented", "SQLite memory system working", "All integration tests passing"],
+      "decisions": ["Full async architecture for performance", "Modular skills/browser/ structure", "SQLite for persistent learning"],
+      "next": ["Production testing", "Performance optimization", "Advanced analytics"],
+      "block": []
+    },
+    {
+      "ts": "2025-01-22T18:15-05:00", 
+      "done": ["Created skills/browser module architecture", "Implemented MCPServerManager and MCPClient", "Built Action class with Pydantic", "Added memory.py with aiosqlite"],
+      "decisions": ["Separate MCP server management from browser actions", "Use Pydantic for structured Action objects", "Async SQLite for memory persistence"],
+      "next": ["Integration testing", "Update documentation"],
+      "block": []
+    },
     {
       "ts": "2025-01-22T09:00-05:00",
       "done": ["Vision capabilities confirmed with llama4:scout", "Screenshot-based workflow implemented", "Complete system tested and working", "Code pushed to GitHub repository"],
@@ -25,16 +39,37 @@
       "decisions": ["Successfully integrated 5 models including Llama4:scout/maverick", "Implemented graceful fallback for missing Chrome extension"],
       "next": ["Enhance real MCP integration", "Add persistence layer"],
       "block": []
-    },
-    {
-      "ts": "2025-01-22T08:15-05:00",
-      "done": ["Cleaned up duplicate skills/ directory", "Added proper package structure"],
-      "decisions": ["Use Mac Studio endpoint instead of multiple LLM providers", "Use Browser MCP instead of Selenium/Playwright"],
-      "next": ["Setup project infrastructure", "Implement 5 core tasks"],
-      "block": []
     }
   ],
   "adr": [
+    {
+      "id": "ADR-003",
+      "title": "Asyncio Architecture for v2.0",
+      "decision": "Convert entire codebase to async/await pattern for better performance and concurrent operations",
+      "status": "accepted",
+      "ts": "2025-01-22"
+    },
+    {
+      "id": "ADR-004", 
+      "title": "Modular Browser Skills Architecture",
+      "decision": "Split browser_mcp_skills.py into modular skills/browser/ with MCPServerManager, MCPClient, and Browser classes",
+      "status": "accepted",
+      "ts": "2025-01-22"
+    },
+    {
+      "id": "ADR-005",
+      "title": "Action Class with Intelligent Fallbacks", 
+      "decision": "Use Pydantic Action objects with fallback selectors and vision-based error recovery for robust web automation",
+      "status": "accepted",
+      "ts": "2025-01-22"
+    },
+    {
+      "id": "ADR-006",
+      "title": "SQLite Memory System for Learning",
+      "decision": "Implement persistent memory with aiosqlite to learn successful selectors and improve over time",
+      "status": "accepted", 
+      "ts": "2025-01-22"
+    },
     {
       "id": "ADR-001",
       "title": "Use Mac Studio Local LLM Endpoint",

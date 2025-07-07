@@ -1,9 +1,13 @@
-from skills.browser_mcp_skills import BrowserMCPSkills
+import asyncio
+from skills.browser import Browser
+from skills.memory import Memory
+from skills.action import Action
 
 class ADKGraph:
-    def __init__(self, llm):
+    def __init__(self, llm, browser=None, memory=None):
         self.llm = llm  # Accept LLM instance instead of provider string
-        self.browser = BrowserMCPSkills()
+        self.browser = browser or Browser(llm=llm)
+        self.memory = memory or Memory()
         self.system_prompt = """
 You are WebSurfer-β, an autonomous web-surfing agent powered by Mac Studio LLM with VISION capabilities.
 
@@ -30,7 +34,7 @@ Always:
             "SaveMemory"          # Store useful URLs & takeaways
         ]
 
-    def run_workflow(self, initial_task, model=None):
+    async def run_workflow(self, initial_task, model=None):
         """Run the complete ADK workflow with specified model"""
         model = model or self.llm.default_model
         
@@ -41,6 +45,10 @@ Always:
             print(f"👁️  Vision mode: ENABLED - Using visual web browsing")
         else:
             print(f"📝 Vision mode: DISABLED - Using text-only browsing")
+        
+        # Initialize browser and memory
+        await self.browser.start()
+        await self.memory.initialize()
         
         # This is a simplified representation of the workflow execution.
         # In a real ADK, this would involve a more complex planner and executor.
@@ -74,12 +82,13 @@ Provide a step-by-step plan including specific websites to visit and actions to 
                 
                 # Example of using browser skills with vision
                 print("📄 Opening example page...")
-                self.browser.open("https://example.com")
+                navigate_action = Action.create_navigate_action("https://example.com")
+                await self.browser.navigate(navigate_action)
                 
                 if self.llm.has_vision(model):
                     # Take screenshot for visual analysis
                     print("📸 Taking screenshot for visual analysis...")
-                    screenshot_path = self.browser.screenshot()
+                    screenshot_path = await self.browser.screenshot()
                     
                     # Analyze page visually
                     visual_prompt = f"""
@@ -106,8 +115,9 @@ Be specific about what you observe visually.
                         
                 else:
                     # Fallback to text extraction
-                    content = self.browser.extract_text("body")
-                    print(f"📄 Extracted: {content}")
+                    snapshot = await self.browser.snapshot()
+                    content = snapshot.get('content', '')
+                    print(f"📄 Extracted: {content[:200]}..." if len(content) > 200 else f"📄 Extracted: {content}")
                 
             elif step == "SummarizeOrExtract":
                 print("📊 Summarizing findings...")
@@ -129,5 +139,9 @@ Provide a comprehensive summary of what was found and accomplished.
                 # Future: implement actual memory storage with screenshots if vision enabled
                 
         print(f"\n🎉 ADK workflow completed with {'vision-enhanced' if self.llm.has_vision(model) else 'text-only'} browsing!")
+        
+        # Cleanup
+        await self.browser.stop()
+        print("🧹 Cleaned up browser resources")
 
 

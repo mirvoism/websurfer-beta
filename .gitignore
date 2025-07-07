@@ -58,4 +58,15 @@ agent.log
 *.png
 *.jpg
 *.jpeg
-screenshots/ 
+screenshots/
+
+# WebSurfer-β v2.0 Memory System
+websurfer_memory.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Archive and backup files
+archive/
+*.bak
+*.backup 

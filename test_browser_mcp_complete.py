@@ -24,13 +24,27 @@ def test_complete_browser_mcp():
     test_results = []
     
     def log_test(test_name, result, details=""):
-        """Log test result"""
-        # More robust error checking
+        """Log test result with improved success/error detection"""
         is_error = False
-        if isinstance(result, dict) and result.get('isError'):
-            is_error = True
-        elif isinstance(result, str) and result.startswith("Error:"):
-            is_error = True
+        
+        # Check for explicit errors
+        if isinstance(result, dict):
+            if result.get('isError') is True:
+                is_error = True
+            elif result.get('status') == 'error':
+                is_error = True
+            elif 'error' in result and result['error']:
+                is_error = True
+        elif isinstance(result, str):
+            if result.startswith("Error:"):
+                is_error = True
+            elif "Failed to" in result:
+                is_error = True
+        
+        # If not an error and we have content, it's likely a success
+        # Browser MCP often returns rich content objects for successful operations
+        if not is_error and isinstance(result, dict) and 'content' in result:
+            is_error = False  # Explicitly mark as success
         
         status = "❌ FAIL" if is_error else "✅ PASS"
         test_results.append((test_name, status, details))
